@@ -12,6 +12,9 @@ import path from "path"
 import * as fs from "fs/promises"
 import { isBinaryFile } from "isbinaryfile"
 
+import { recordRead } from "../../hooks/readHashTracker"
+import { sha256 } from "../../hooks/contentHash"
+
 import type { ReadFileParams, ReadFileMode, ReadFileToolParams, FileEntry, LineRange } from "@roo-code/types"
 import { isLegacyReadFileParams, type ClineSayTool } from "@roo-code/types"
 
@@ -217,6 +220,9 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 					const buffer = await fs.readFile(fullPath)
 					const fileContent = buffer.toString("utf-8")
 					const result = this.processTextFile(fileContent, entry)
+
+					// Phase 4: Record raw buffer hash for optimistic locking
+					recordRead(task.cwd, relPath, sha256(buffer))
 
 					await task.fileContextTracker.trackFileContext(relPath, "read_tool" as RecordSource)
 
@@ -657,7 +663,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 			...sharedMessageProps,
 			content: undefined,
 		} satisfies ClineSayTool)
-		await task.ask("tool", partialMessage, block.partial).catch(() => {})
+		await task.ask("tool", partialMessage, block.partial).catch(() => { })
 	}
 
 	/**
@@ -767,7 +773,11 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				}
 
 				// Read text file
-				const rawContent = await fs.readFile(fullPath, "utf8")
+				const rawBuffer = await fs.readFile(fullPath)
+				const rawContent = rawBuffer.toString("utf8")
+
+				// Phase 4: Record raw buffer hash for optimistic locking
+				recordRead(task.cwd, relPath, sha256(rawBuffer))
 
 				// Handle line ranges if specified
 				let content: string

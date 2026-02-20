@@ -49,3 +49,8 @@ export { canonicalizePath } from "./pathNormalize"
 export { sha256 } from "./contentHash"
 export { classifyMutation, recordWrite, resetClassifierCache } from "./mutationClassifier"
 export { traceSerializerHook, resetTraceSerializerState } from "./traceSerializerHook"
+
+// Phase 4 — Optimistic Locking & Lesson Recording
+export { recordRead, getReadHash, clearRead, clearAllReads } from "./readHashTracker"
+export { staleLockHook } from "./staleLockHook"
+export { lessonRecorderHook, resetLessonDedup } from "./lessonRecorderHook"

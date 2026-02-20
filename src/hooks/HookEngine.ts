@@ -20,6 +20,8 @@ import { classifyWithPath } from "./commandClassifier"
 import { scopeEnforcerHook } from "./scopeEnforcer"
 import { authorizationHook } from "./authorizationHook"
 import { traceSerializerHook } from "./traceSerializerHook"
+import { staleLockHook } from "./staleLockHook"
+import { lessonRecorderHook } from "./lessonRecorderHook"
 import { isGovernedWorkspace } from "../core/context/activeIntents"
 
 // ---------------------------------------------------------------------------
@@ -35,10 +37,10 @@ export class HookEngine {
 		// Scope enforcement runs BEFORE authorization so that an out-of-scope
 		// write is rejected immediately without wasting the user's attention
 		// on the approval dialog.
-		this.preHooks = [scopeEnforcerHook, authorizationHook]
+		this.preHooks = [staleLockHook, scopeEnforcerHook, authorizationHook]
 
 		// Post-hooks — trace serializer registered by default (Phase 3).
-		this.postHooks = [traceSerializerHook]
+		this.postHooks = [traceSerializerHook, lessonRecorderHook]
 	}
 
 	// -----------------------------------------------------------------------

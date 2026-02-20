@@ -207,6 +207,12 @@ export const traceSerializerHook: PostHookFn = async (ctx, outcome) => {
 		// Update classifier cache (keep in sync without re-reading ledger)
 		if (outcome.success && mutationType === "WRITE") {
 			recordWrite(ctx.activeIntentId, filePath)
+
+			// Phase 4: Clear stale-lock hash after full write success.
+			// Runs here (post-hook) NOT in staleLockHook (pre-hook) so
+			// the hash persists if later pre-hooks block the write.
+			const { clearRead } = await import("./readHashTracker")
+			clearRead(ctx.cwd, filePath)
 		}
 	} catch (err) {
 		// Post-hooks are fire-and-forget — never crash

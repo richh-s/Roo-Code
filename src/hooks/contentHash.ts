@@ -12,14 +12,20 @@ import { createHash } from "crypto"
 // ---------------------------------------------------------------------------
 
 /**
- * Compute the SHA-256 hash of a string.
+ * Compute the SHA-256 hash of content (Buffer or string).
  *
- * Used to hash **actual file content read from disk** after a write,
- * never the raw tool payload from `ctx.params.content`.
+ * When a Buffer is passed, raw bytes are hashed without encoding —
+ * this is mandatory for optimistic locking (Phase 4) to avoid
+ * encoding-related inconsistencies with binary or special-char files.
  *
- * @param content - String content to hash
+ * When a string is passed, utf8 encoding is used (Phase 3 compat).
+ *
+ * @param content - Buffer (preferred for disk reads) or string to hash
  * @returns 64-character lowercase hexadecimal digest
  */
-export function sha256(content: string): string {
+export function sha256(content: Buffer | string): string {
+	if (Buffer.isBuffer(content)) {
+		return createHash("sha256").update(content).digest("hex")
+	}
 	return createHash("sha256").update(content, "utf8").digest("hex")
 }
