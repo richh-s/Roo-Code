@@ -265,6 +265,20 @@ export abstract class BaseTool<TName extends ToolName> {
 
 		// Execute with typed parameters and record trace events for governed mode
 		let executeError: Error | undefined
+
+		// Phase 4: Capture tool result for accurate post-hook outcomes.
+		// ExecuteCommandTool (and others) don't throw on semantic failures
+		// (e.g. exit code != 0). They push the result via pushToolResult.
+		// We capture that result to detect failures for lessonRecorderHook.
+		let capturedToolResult: string | undefined
+		const originalPushToolResult = callbacks.pushToolResult
+		callbacks.pushToolResult = (result) => {
+			if (typeof result === "string") {
+				capturedToolResult = result
+			}
+			originalPushToolResult(result)
+		}
+
 		try {
 			await this.execute(params, task, callbacks)
 		} catch (error) {
@@ -292,9 +306,16 @@ export abstract class BaseTool<TName extends ToolName> {
 			// Phase 3: Fire post-hooks (trace serializer).
 			// Uses the same hookCtx built for pre-hooks above.
 			if (hookCtx) {
+				// Phase 4: Detect command exit-code failures from captured result.
+				// Pattern matches "Exit code: N" where N != 0.
+				const isCommandFailure =
+					!executeError &&
+					!!capturedToolResult &&
+					/exit code:\s*[1-9]/i.test(capturedToolResult)
+
 				await hookEngine.runPost(hookCtx, {
-					success: !executeError,
-					error: executeError?.message,
+					success: !executeError && !isCommandFailure,
+					error: executeError?.message ?? (isCommandFailure ? capturedToolResult : undefined),
 				})
 			}
 		}
