@@ -21,12 +21,28 @@ const MOCK_USERS: Record<string, string> = {
 	"user@example.com": "password",
 }
 
+function sanitizeString(value: unknown): string {
+	return typeof value === "string" ? value : ""
+}
+
+function sanitizeEmail(email: unknown): string {
+	return sanitizeString(email)
+		.trim()
+		.toLowerCase()
+		.replace(/[\u0000-\u001F\u007F]/g, "")
+}
+
+function sanitizePassword(password: unknown): string {
+	return sanitizeString(password).replace(/\u0000/g, "")
+}
+
 /**
  * Authenticate a user with email and password.
  * Returns a token on success or an error message on failure.
  */
 export function authenticateUser(credentials: LoginCredentials): LoginResult {
-	const { email, password } = credentials
+	const email = sanitizeEmail(credentials?.email)
+	const password = sanitizePassword(credentials?.password)
 
 	if (!email || !password) {
 		return { success: false, error: "Email and password are required" }

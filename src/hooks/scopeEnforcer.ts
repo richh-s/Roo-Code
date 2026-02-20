@@ -4,30 +4,56 @@
  * Requirement 4: In the write_file Pre-Hook, check if the target file
  * matches the owned_scope of the active intent.
  *
- * - If valid  → proceed
- * - If invalid → BLOCK and return:
- *     "Scope Violation: REQ-001 is not authorized to edit [filename].
- *      Request scope expansion."
- *
- * Scope matching uses simple prefix / wildcard matching against the
- * intent's `scope` globs (e.g. `src/auth/*`, `src/**`).
- * No external glob dependency — just string-based matching.
+ * Security hardening:
+ * - Path traversal prevention: normalise with path.resolve(), reject if
+ *   resolved path is outside the workspace root.
+ * - Scope matching uses simple prefix / wildcard matching.
+ * - .intentignore exemptions supported.
  */
 
+import * as vscode from "vscode"
+import * as path from "path"
 import type { HookContext, HookResult, ScopeCheckResult } from "./types"
-import { buildScopeViolationError } from "./toolError"
+import { buildScopeViolationError, buildPathTraversalError } from "./toolError"
 import { loadIntentIgnorePatterns, isIgnoredByIntent } from "./intentIgnore"
 import { loadActiveIntents, findIntentById } from "../core/context/activeIntents"
+import { writePendingScopeUpdate } from "./pendingScopeUpdates"
 
 // ---------------------------------------------------------------------------
 // Tools that carry a target file path
 // ---------------------------------------------------------------------------
 
-/**
- * Common parameter keys where tools store the target file path.
- * We check these in order and use the first truthy value.
- */
 const PATH_PARAM_KEYS = ["path", "file_path", "filePath", "filename"] as const
+
+// ---------------------------------------------------------------------------
+// Path Security
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalise a file path and check it is within the workspace.
+ *
+ * Returns the workspace-relative POSIX path if safe, or `null` if the
+ * path resolves outside the workspace (path traversal attempt).
+ *
+ * @param targetPath - Raw path from tool params (may be absolute or relative)
+ * @param cwd        - Workspace root directory (absolute)
+ */
+export function normaliseAndValidatePath(
+	targetPath: string,
+	cwd: string,
+): { relativePath: string } | { traversal: true } {
+	const resolved = path.resolve(cwd, targetPath)
+	const normalisedCwd = cwd.endsWith(path.sep) ? cwd : cwd + path.sep
+
+	// Check that resolved path is within workspace root
+	if (!resolved.startsWith(normalisedCwd) && resolved !== cwd.replace(/\/$/, "")) {
+		return { traversal: true }
+	}
+
+	// Convert to workspace-relative POSIX path
+	const relativePath = path.relative(cwd, resolved).replace(/\\/g, "/")
+	return { relativePath }
+}
 
 // ---------------------------------------------------------------------------
 // Scope Matching
@@ -41,13 +67,9 @@ const PATH_PARAM_KEYS = ["path", "file_path", "filePath", "filename"] as const
  * - `src/auth/**`  → matches any file at any depth under `src/auth/`
  * - `src/**`       → matches everything under `src/`
  * - Exact match    → `src/auth/login.ts` matches `src/auth/login.ts`
- *
- * @param filePath - Relative path to the target file
- * @param scopeGlobs - Array of scope patterns from the active intent
  */
 export function isPathInScope(filePath: string, scopeGlobs: string[]): boolean {
 	if (scopeGlobs.length === 0) {
-		// No scope restrictions → everything is in scope
 		return true
 	}
 
@@ -61,19 +83,18 @@ export function isPathInScope(filePath: string, scopeGlobs: string[]): boolean {
 			return true
 		}
 
-		// "dir/**" → recursive wildcard — matches any subpath
+		// "dir/**" → recursive wildcard
 		if (g.endsWith("/**")) {
-			const prefix = g.slice(0, -3) // "src/auth"
+			const prefix = g.slice(0, -3)
 			if (normalised.startsWith(prefix + "/") || normalised === prefix) {
 				return true
 			}
 		}
 
-		// "dir/*" → single-level wildcard — matches files directly inside dir
+		// "dir/*" → single-level wildcard
 		if (g.endsWith("/*") && !g.endsWith("/**")) {
-			const prefix = g.slice(0, -2) // "src/auth"
+			const prefix = g.slice(0, -2)
 			if (normalised.startsWith(prefix + "/")) {
-				// Must not contain another "/" after the prefix
 				const rest = normalised.slice(prefix.length + 1)
 				if (!rest.includes("/")) {
 					return true
@@ -96,7 +117,6 @@ export function isPathInScope(filePath: string, scopeGlobs: string[]): boolean {
 
 /**
  * Extract the target file path from tool parameters.
- * Returns undefined if the tool doesn't operate on a file path.
  */
 export function extractTargetPath(params: Record<string, unknown>): string | undefined {
 	for (const key of PATH_PARAM_KEYS) {
@@ -111,17 +131,12 @@ export function extractTargetPath(params: Record<string, unknown>): string | und
 /**
  * Scope enforcement pre-hook.
  *
- * Checks whether the tool's target file is within the active intent's
- * owned_scope. If not, blocks with a standardised scope-violation error.
- *
- * Skips enforcement when:
- * - The tool has no file path parameter (e.g. execute_command)
- * - No active intent is selected (gatekeeper already handles this)
- * - No scope is defined (intent allows everything)
- * - The file matches a `.intentignore` pattern
+ * Security checks in order:
+ *   1. Path traversal prevention (resolve + workspace boundary check)
+ *   2. .intentignore exemptions
+ *   3. Scope glob matching
  */
 export async function scopeEnforcerHook(ctx: HookContext): Promise<HookResult> {
-	// No active intent → skip (gatekeeper handles this upstream)
 	if (!ctx.activeIntentId) {
 		return { proceed: true }
 	}
@@ -134,30 +149,35 @@ export async function scopeEnforcerHook(ctx: HookContext): Promise<HookResult> {
 			const intent = findIntentById(intents, ctx.activeIntentId)
 			if (intent) {
 				scope = intent.scope
-				ctx.activeIntentScope = scope // cache for subsequent hooks
+				ctx.activeIntentScope = scope
 			}
 		} catch {
-			// YAML load failed — skip scope enforcement gracefully
 			return { proceed: true }
 		}
 	}
 
 	if (!scope || scope.length === 0) {
-		// No scope restrictions → everything is in scope
 		return { proceed: true }
 	}
 
 	// Extract target path from tool params
 	const targetPath = extractTargetPath(ctx.params)
 	if (!targetPath) {
-		// Tool doesn't operate on a file → scope not applicable
 		return { proceed: true }
 	}
 
-	// Make path relative to workspace root for matching
-	const relativePath = targetPath.startsWith(ctx.cwd)
-		? targetPath.slice(ctx.cwd.length).replace(/^[/\\]/, "")
-		: targetPath
+	// ── Security: Path traversal prevention ──
+	const pathResult = normaliseAndValidatePath(targetPath, ctx.cwd)
+	if ("traversal" in pathResult) {
+		const errorPayload = buildPathTraversalError(targetPath, ctx.cwd)
+		return {
+			proceed: false,
+			error: errorPayload,
+			reason: `Path Traversal Blocked: "${targetPath}" resolves outside workspace`,
+		}
+	}
+
+	const relativePath = pathResult.relativePath
 
 	// Check .intentignore — exempted files bypass scope enforcement
 	const ignorePatterns = loadIntentIgnorePatterns(ctx.cwd)
@@ -167,8 +187,38 @@ export async function scopeEnforcerHook(ctx: HookContext): Promise<HookResult> {
 
 	// Check scope
 	if (!isPathInScope(relativePath, scope)) {
-		const errorPayload = buildScopeViolationError(ctx.activeIntentId, relativePath, scope)
+		// Show 3-button modal for scope violation workflow
+		const intentLabel = ctx.activeIntentId ?? "unknown"
+		const scopeDisplay = scope.join(", ")
+		const message =
+			`[Scope Violation] Intent "${intentLabel}" attempted to edit "${relativePath}".\n\n` +
+			`Allowed scope: [${scopeDisplay}]\n\n` +
+			`How would you like to proceed?`
 
+		const choice = await vscode.window.showWarningMessage(
+			message,
+			{ modal: true },
+			"Reject",
+			"Approve Once",
+			"Approve & Expand Scope",
+		)
+
+		if (choice === "Approve Once") {
+			// One-time bypass — not persisted, will block again next time
+			return { proceed: true, reason: `User approved one-time bypass for ${relativePath}` }
+		}
+
+		if (choice === "Approve & Expand Scope") {
+			// Persist the expansion request (does NOT auto-edit YAML)
+			writePendingScopeUpdate(ctx.cwd, ctx.activeIntentId!, relativePath)
+			return {
+				proceed: true,
+				reason: `User approved and proposed scope expansion for ${relativePath}`,
+			}
+		}
+
+		// Rejected or dismissed
+		const errorPayload = buildScopeViolationError(ctx.activeIntentId!, relativePath, scope)
 		return {
 			proceed: false,
 			error: errorPayload,

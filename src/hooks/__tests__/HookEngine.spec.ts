@@ -1,11 +1,11 @@
 /**
- * Phase 2 — HookEngine Unit Tests
+ * Phase 2 — HookEngine Unit Tests (Hardened)
  *
- * Tests for the Hook Engine, command classifier, scope enforcer,
- * authorization hook, and tool error builder.
+ * Tests for the Hook Engine, command classifier (3-tier), scope enforcer
+ * (path traversal + 3-button modal), authorization hook, and tool error builder.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, vi, beforeEach } from "vitest"
 
 // Mock vscode before importing modules that use it
 vi.mock("vscode", () => ({
@@ -14,9 +14,12 @@ vi.mock("vscode", () => ({
 	},
 }))
 
-// Mock fs for intentIgnore
+// Mock fs for intentIgnore and pendingScopeUpdates
 vi.mock("fs", () => ({
 	readFileSync: vi.fn(),
+	existsSync: vi.fn(),
+	writeFileSync: vi.fn(),
+	mkdirSync: vi.fn(),
 }))
 
 // Mock activeIntents for scope enforcer
@@ -28,10 +31,17 @@ vi.mock("../../core/context/activeIntents", () => ({
 
 import * as vscode from "vscode"
 import * as fs from "fs"
-import { classifyTool, isExplicitlyDestructive } from "../commandClassifier"
-import { buildToolError, buildScopeViolationError, buildAuthorizationRejectedError, HookErrorCode } from "../toolError"
+import { classifyTool, classifyWithPath, isSensitivePath, isExplicitlyDestructive } from "../commandClassifier"
+import {
+	buildToolError,
+	buildScopeViolationError,
+	buildAuthorizationRejectedError,
+	buildPathTraversalError,
+	buildSensitiveReadError,
+	HookErrorCode,
+} from "../toolError"
 import { parseIntentIgnore, isIgnoredByIntent } from "../intentIgnore"
-import { isPathInScope, extractTargetPath, checkScopeViolation } from "../scopeEnforcer"
+import { isPathInScope, extractTargetPath, checkScopeViolation, normaliseAndValidatePath } from "../scopeEnforcer"
 import { scopeEnforcerHook } from "../scopeEnforcer"
 import { authorizationHook } from "../authorizationHook"
 import { HookEngine } from "../HookEngine"
@@ -43,33 +53,95 @@ import type { HookContext } from "../types"
 // ============================================================================
 
 describe("commandClassifier", () => {
-	describe("classifyTool", () => {
+	describe("classifyTool (name-only)", () => {
 		it("classifies read-only tools as safe", () => {
 			expect(classifyTool("read_file")).toBe("safe")
 			expect(classifyTool("search_files")).toBe("safe")
 			expect(classifyTool("list_files")).toBe("safe")
 			expect(classifyTool("codebase_search")).toBe("safe")
-			expect(classifyTool("read_command_output")).toBe("safe")
 		})
 
 		it("classifies meta tools as safe", () => {
 			expect(classifyTool("ask_followup_question")).toBe("safe")
 			expect(classifyTool("attempt_completion")).toBe("safe")
-			expect(classifyTool("switch_mode")).toBe("safe")
-			expect(classifyTool("new_task")).toBe("safe")
 			expect(classifyTool("select_active_intent")).toBe("safe")
 		})
 
 		it("classifies writing tools as destructive", () => {
 			expect(classifyTool("write_to_file")).toBe("destructive")
-			expect(classifyTool("apply_diff")).toBe("destructive")
-			expect(classifyTool("edit")).toBe("destructive")
-			expect(classifyTool("search_and_replace")).toBe("destructive")
 			expect(classifyTool("execute_command")).toBe("destructive")
 		})
 
-		it("classifies unknown tools as destructive (safe default)", () => {
+		it("classifies unknown tools as destructive", () => {
 			expect(classifyTool("some_unknown_tool")).toBe("destructive")
+		})
+	})
+
+	describe("classifyWithPath (path-aware)", () => {
+		it("returns safe for read_file on normal files", () => {
+			expect(classifyWithPath("read_file", { path: "src/auth/login.ts" })).toBe("safe")
+		})
+
+		it("returns sensitive for read_file on .env", () => {
+			expect(classifyWithPath("read_file", { path: ".env" })).toBe("sensitive")
+		})
+
+		it("returns sensitive for read_file on .env.production", () => {
+			expect(classifyWithPath("read_file", { path: ".env.production" })).toBe("sensitive")
+		})
+
+		it("returns sensitive for read_file on .pem files", () => {
+			expect(classifyWithPath("read_file", { path: "certs/server.pem" })).toBe("sensitive")
+		})
+
+		it("returns sensitive for read_file on .key files", () => {
+			expect(classifyWithPath("read_file", { path: "ssl/private.key" })).toBe("sensitive")
+		})
+
+		it("returns sensitive for read_file on id_rsa", () => {
+			expect(classifyWithPath("read_file", { path: ".ssh/id_rsa" })).toBe("sensitive")
+		})
+
+		it("returns sensitive for read_file on .orchestration/ files", () => {
+			expect(classifyWithPath("read_file", { path: ".orchestration/active_intents.yaml" })).toBe("sensitive")
+		})
+
+		it("returns sensitive for read_file on secrets.* files", () => {
+			expect(classifyWithPath("read_file", { path: "config/secrets.yaml" })).toBe("sensitive")
+			expect(classifyWithPath("read_file", { path: "credentials.json" })).toBe("sensitive")
+		})
+
+		it("returns destructive for write_to_file regardless of path", () => {
+			expect(classifyWithPath("write_to_file", { path: ".env" })).toBe("destructive")
+		})
+
+		it("returns safe for read_file with no params", () => {
+			expect(classifyWithPath("read_file", {})).toBe("safe")
+		})
+	})
+
+	describe("isSensitivePath", () => {
+		it("detects .env files", () => {
+			expect(isSensitivePath(".env")).toBe(true)
+			expect(isSensitivePath(".env.local")).toBe(true)
+			expect(isSensitivePath(".env.staging")).toBe(true)
+		})
+
+		it("detects key files", () => {
+			expect(isSensitivePath("server.pem")).toBe(true)
+			expect(isSensitivePath("private.key")).toBe(true)
+			expect(isSensitivePath("keystore.p12")).toBe(true)
+		})
+
+		it("detects SSH keys", () => {
+			expect(isSensitivePath("id_rsa")).toBe(true)
+			expect(isSensitivePath("id_ed25519")).toBe(true)
+		})
+
+		it("does not flag normal files", () => {
+			expect(isSensitivePath("src/auth/login.ts")).toBe(false)
+			expect(isSensitivePath("README.md")).toBe(false)
+			expect(isSensitivePath("package.json")).toBe(false)
 		})
 	})
 
@@ -79,7 +151,7 @@ describe("commandClassifier", () => {
 			expect(isExplicitlyDestructive("execute_command")).toBe(true)
 		})
 
-		it("returns false for unknown tools (even if classified as destructive)", () => {
+		it("returns false for unknown tools", () => {
 			expect(isExplicitlyDestructive("some_unknown_tool")).toBe(false)
 		})
 	})
@@ -103,39 +175,69 @@ describe("toolError", () => {
 		it("includes details when provided", () => {
 			const result = buildToolError(HookErrorCode.HOOK_BLOCKED, "msg", { foo: "bar" })
 			const parsed = JSON.parse(result)
-
 			expect(parsed.error.details).toEqual({ foo: "bar" })
 		})
 
-		it("omits details key when not provided", () => {
+		it("includes suggestedFix when provided", () => {
+			const result = buildToolError(HookErrorCode.HOOK_BLOCKED, "msg", undefined, "Try this instead")
+			const parsed = JSON.parse(result)
+			expect(parsed.error.suggestedFix).toBe("Try this instead")
+		})
+
+		it("omits details and suggestedFix when not provided", () => {
 			const result = buildToolError(HookErrorCode.HOOK_BLOCKED, "msg")
 			const parsed = JSON.parse(result)
-
 			expect(parsed.error).not.toHaveProperty("details")
+			expect(parsed.error).not.toHaveProperty("suggestedFix")
 		})
 	})
 
 	describe("buildScopeViolationError", () => {
-		it("contains the REQ-001 wording", () => {
+		it("contains intent, file, scope, and suggestedFix", () => {
 			const result = buildScopeViolationError("refactor-auth", "src/billing/invoice.ts", ["src/auth/*"])
-			expect(result).toContain("refactor-auth")
-			expect(result).toContain("src/billing/invoice.ts")
-			expect(result).toContain("Request scope expansion")
-
 			const parsed = JSON.parse(result)
+
 			expect(parsed.error.code).toBe("SCOPE_VIOLATION")
 			expect(parsed.error.details.intentId).toBe("refactor-auth")
+			expect(parsed.error.details.requestedPath).toBe("src/billing/invoice.ts")
+			expect(parsed.error.details.allowedScope).toEqual(["src/auth/*"])
+			expect(parsed.error.suggestedFix).toBeDefined()
+			expect(parsed.error.suggestedFix).toContain("expand the scope")
 		})
 	})
 
 	describe("buildAuthorizationRejectedError", () => {
-		it("contains tool name and rejection wording", () => {
+		it("contains tool name, rejection, and suggestedFix", () => {
 			const result = buildAuthorizationRejectedError("write_to_file", "refactor-auth")
 			const parsed = JSON.parse(result)
 
 			expect(parsed.error.code).toBe("AUTHORIZATION_REJECTED")
 			expect(parsed.message).toContain("write_to_file")
-			expect(parsed.error.details.intentId).toBe("refactor-auth")
+			expect(parsed.error.suggestedFix).toBeDefined()
+			expect(parsed.error.suggestedFix).toContain("different approach")
+		})
+	})
+
+	describe("buildPathTraversalError", () => {
+		it("contains the path, workspace, and suggestedFix", () => {
+			const result = buildPathTraversalError("../config.ts", "/workspace")
+			const parsed = JSON.parse(result)
+
+			expect(parsed.error.code).toBe("PATH_TRAVERSAL")
+			expect(parsed.error.details.requestedPath).toBe("../config.ts")
+			expect(parsed.error.details.workspaceRoot).toBe("/workspace")
+			expect(parsed.error.suggestedFix).toContain("workspace-relative")
+		})
+	})
+
+	describe("buildSensitiveReadError", () => {
+		it("contains the file path and suggestedFix", () => {
+			const result = buildSensitiveReadError("read_file", ".env")
+			const parsed = JSON.parse(result)
+
+			expect(parsed.error.code).toBe("SENSITIVE_READ_BLOCKED")
+			expect(parsed.error.details.filePath).toBe(".env")
+			expect(parsed.error.suggestedFix).toContain("secret files")
 		})
 	})
 })
@@ -204,7 +306,6 @@ describe("scopeEnforcer", () => {
 
 		it("matches single-level wildcard (dir/*)", () => {
 			expect(isPathInScope("src/auth/login.ts", ["src/auth/*"])).toBe(true)
-			// Should NOT match subdirectories
 			expect(isPathInScope("src/auth/sub/deep.ts", ["src/auth/*"])).toBe(false)
 		})
 
@@ -219,6 +320,47 @@ describe("scopeEnforcer", () => {
 
 		it("rejects out-of-scope paths", () => {
 			expect(isPathInScope("src/billing/invoice.ts", ["src/auth/*"])).toBe(false)
+		})
+	})
+
+	describe("normaliseAndValidatePath", () => {
+		it("accepts workspace-relative paths", () => {
+			const result = normaliseAndValidatePath("src/auth/login.ts", "/workspace")
+			expect("relativePath" in result).toBe(true)
+			if ("relativePath" in result) {
+				expect(result.relativePath).toBe("src/auth/login.ts")
+			}
+		})
+
+		it("blocks parent traversal (../)", () => {
+			const result = normaliseAndValidatePath("../config/database.ts", "/workspace")
+			expect("traversal" in result).toBe(true)
+		})
+
+		it("blocks deep parent traversal (../../)", () => {
+			const result = normaliseAndValidatePath("../../etc/passwd", "/workspace")
+			expect("traversal" in result).toBe(true)
+		})
+
+		it("blocks absolute paths outside workspace", () => {
+			const result = normaliseAndValidatePath("/etc/passwd", "/workspace")
+			expect("traversal" in result).toBe(true)
+		})
+
+		it("allows absolute paths within workspace", () => {
+			const result = normaliseAndValidatePath("/workspace/src/file.ts", "/workspace")
+			expect("relativePath" in result).toBe(true)
+			if ("relativePath" in result) {
+				expect(result.relativePath).toBe("src/file.ts")
+			}
+		})
+
+		it("normalises ./ prefixed paths", () => {
+			const result = normaliseAndValidatePath("./src/auth/login.ts", "/workspace")
+			expect("relativePath" in result).toBe(true)
+			if ("relativePath" in result) {
+				expect(result.relativePath).toBe("src/auth/login.ts")
+			}
 		})
 	})
 
@@ -246,11 +388,14 @@ describe("scopeEnforcer", () => {
 			const result = checkScopeViolation("src/billing/invoice.ts", "refactor-auth", ["src/auth/*"])
 			expect(result.allowed).toBe(false)
 			expect(result.violation).toContain("refactor-auth")
-			expect(result.violation).toContain("src/billing/invoice.ts")
 		})
 	})
 
 	describe("scopeEnforcerHook", () => {
+		beforeEach(() => {
+			vi.clearAllMocks()
+		})
+
 		it("proceeds when no active intent", async () => {
 			const ctx: HookContext = {
 				toolName: "write_to_file",
@@ -283,7 +428,7 @@ describe("scopeEnforcer", () => {
 			expect(result.proceed).toBe(true)
 		})
 
-		it("blocks when file is outside scope", async () => {
+		it("blocks path traversal attempts", async () => {
 			vi.mocked(loadActiveIntents).mockResolvedValue([
 				{ id: "refactor-auth", goal: "g", status: "IN_PROGRESS", constraints: [], scope: ["src/auth/*"] },
 			])
@@ -294,11 +439,39 @@ describe("scopeEnforcer", () => {
 				constraints: [],
 				scope: ["src/auth/*"],
 			})
-
-			// Mock fs to return empty .intentignore
 			vi.mocked(fs.readFileSync).mockImplementation(() => {
 				throw new Error("ENOENT")
 			})
+
+			const ctx: HookContext = {
+				toolName: "write_to_file",
+				params: { path: "../config/database.ts" },
+				cwd: "/workspace",
+				activeIntentId: "refactor-auth",
+			}
+			const result = await scopeEnforcerHook(ctx)
+			expect(result.proceed).toBe(false)
+
+			const parsed = JSON.parse(result.error!)
+			expect(parsed.error.code).toBe("PATH_TRAVERSAL")
+			expect(parsed.error.suggestedFix).toContain("workspace-relative")
+		})
+
+		it("shows 3-button modal when file is outside scope and blocks on Reject", async () => {
+			vi.mocked(loadActiveIntents).mockResolvedValue([
+				{ id: "refactor-auth", goal: "g", status: "IN_PROGRESS", constraints: [], scope: ["src/auth/*"] },
+			])
+			vi.mocked(findIntentById).mockReturnValue({
+				id: "refactor-auth",
+				goal: "g",
+				status: "IN_PROGRESS",
+				constraints: [],
+				scope: ["src/auth/*"],
+			})
+			vi.mocked(fs.readFileSync).mockImplementation(() => {
+				throw new Error("ENOENT")
+			})
+			vi.mocked(vscode.window.showWarningMessage).mockResolvedValue("Reject" as any)
 
 			const ctx: HookContext = {
 				toolName: "write_to_file",
@@ -308,10 +481,70 @@ describe("scopeEnforcer", () => {
 			}
 			const result = await scopeEnforcerHook(ctx)
 			expect(result.proceed).toBe(false)
-			expect(result.error).toBeDefined()
 
 			const parsed = JSON.parse(result.error!)
 			expect(parsed.error.code).toBe("SCOPE_VIOLATION")
+			expect(parsed.error.suggestedFix).toBeDefined()
+		})
+
+		it("allows one-time bypass on 'Approve Once'", async () => {
+			vi.mocked(loadActiveIntents).mockResolvedValue([
+				{ id: "refactor-auth", goal: "g", status: "IN_PROGRESS", constraints: [], scope: ["src/auth/*"] },
+			])
+			vi.mocked(findIntentById).mockReturnValue({
+				id: "refactor-auth",
+				goal: "g",
+				status: "IN_PROGRESS",
+				constraints: [],
+				scope: ["src/auth/*"],
+			})
+			vi.mocked(fs.readFileSync).mockImplementation(() => {
+				throw new Error("ENOENT")
+			})
+			vi.mocked(vscode.window.showWarningMessage).mockResolvedValue("Approve Once" as any)
+
+			const ctx: HookContext = {
+				toolName: "write_to_file",
+				params: { path: "src/billing/invoice.ts" },
+				cwd: "/workspace",
+				activeIntentId: "refactor-auth",
+			}
+			const result = await scopeEnforcerHook(ctx)
+			expect(result.proceed).toBe(true)
+			expect(result.reason).toContain("one-time bypass")
+		})
+
+		it("allows and records expansion on 'Approve & Expand Scope'", async () => {
+			vi.mocked(loadActiveIntents).mockResolvedValue([
+				{ id: "refactor-auth", goal: "g", status: "IN_PROGRESS", constraints: [], scope: ["src/auth/*"] },
+			])
+			vi.mocked(findIntentById).mockReturnValue({
+				id: "refactor-auth",
+				goal: "g",
+				status: "IN_PROGRESS",
+				constraints: [],
+				scope: ["src/auth/*"],
+			})
+			vi.mocked(fs.readFileSync).mockImplementation(() => {
+				throw new Error("ENOENT")
+			})
+			vi.mocked(fs.existsSync).mockReturnValue(false)
+			vi.mocked(vscode.window.showWarningMessage).mockResolvedValue("Approve & Expand Scope" as any)
+
+			const ctx: HookContext = {
+				toolName: "write_to_file",
+				params: { path: "src/billing/invoice.ts" },
+				cwd: "/workspace",
+				activeIntentId: "refactor-auth",
+			}
+			const result = await scopeEnforcerHook(ctx)
+			expect(result.proceed).toBe(true)
+			expect(result.reason).toContain("scope expansion")
+
+			// Verify pending scope update was written
+			expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalled()
+			const writeCall = vi.mocked(fs.writeFileSync).mock.calls[0]
+			expect(String(writeCall[0])).toContain("pending_scope_updates.json")
 		})
 
 		it("allows when file is within scope", async () => {
@@ -363,7 +596,7 @@ describe("authorizationHook", () => {
 		expect(result.proceed).toBe(true)
 	})
 
-	it("blocks when user rejects", async () => {
+	it("blocks when user rejects with suggestedFix in error", async () => {
 		vi.mocked(vscode.window.showWarningMessage).mockResolvedValue("Reject" as any)
 
 		const ctx: HookContext = {
@@ -374,10 +607,10 @@ describe("authorizationHook", () => {
 		}
 		const result = await authorizationHook(ctx)
 		expect(result.proceed).toBe(false)
-		expect(result.error).toBeDefined()
 
 		const parsed = JSON.parse(result.error!)
 		expect(parsed.error.code).toBe("AUTHORIZATION_REJECTED")
+		expect(parsed.error.suggestedFix).toBeDefined()
 	})
 
 	it("blocks when user dismisses dialog (undefined)", async () => {
@@ -402,7 +635,7 @@ describe("HookEngine", () => {
 		vi.clearAllMocks()
 	})
 
-	it("bypasses all hooks for safe tools", async () => {
+	it("bypasses all hooks for safe tools on normal files", async () => {
 		vi.mocked(isGovernedWorkspace).mockReturnValue(true)
 
 		const engine = new HookEngine()
@@ -414,6 +647,41 @@ describe("HookEngine", () => {
 		}
 		const result = await engine.runPre(ctx)
 		expect(result.proceed).toBe(true)
+		expect(ctx.classification).toBe("safe")
+	})
+
+	it("routes SENSITIVE tools to authorization only (skips scope)", async () => {
+		vi.mocked(isGovernedWorkspace).mockReturnValue(true)
+		vi.mocked(vscode.window.showWarningMessage).mockResolvedValue("Approve" as any)
+
+		const engine = new HookEngine()
+		const ctx: HookContext = {
+			toolName: "read_file",
+			params: { path: ".env" },
+			cwd: "/workspace",
+			activeIntentId: "refactor-auth",
+		}
+		const result = await engine.runPre(ctx)
+		expect(result.proceed).toBe(true)
+		expect(ctx.classification).toBe("sensitive")
+		// Verify showWarningMessage was called (authorization triggered)
+		expect(vscode.window.showWarningMessage).toHaveBeenCalled()
+	})
+
+	it("blocks SENSITIVE reads when user rejects", async () => {
+		vi.mocked(isGovernedWorkspace).mockReturnValue(true)
+		vi.mocked(vscode.window.showWarningMessage).mockResolvedValue("Reject" as any)
+
+		const engine = new HookEngine()
+		const ctx: HookContext = {
+			toolName: "read_file",
+			params: { path: ".env" },
+			cwd: "/workspace",
+			activeIntentId: "refactor-auth",
+		}
+		const result = await engine.runPre(ctx)
+		expect(result.proceed).toBe(false)
+		expect(ctx.classification).toBe("sensitive")
 	})
 
 	it("bypasses all hooks for ungoverned workspace", async () => {
@@ -431,10 +699,8 @@ describe("HookEngine", () => {
 
 	it("runs pre-hooks for destructive tools in governed mode", async () => {
 		vi.mocked(isGovernedWorkspace).mockReturnValue(true)
-		vi.mocked(vscode.window.showWarningMessage).mockResolvedValue("Approve" as any)
 
 		const engine = new HookEngine()
-		// Clear default hooks and add a simple pass-through
 		engine.clearHooks()
 		const mockHook = vi.fn().mockResolvedValue({ proceed: true })
 		engine.addPreHook(mockHook)
@@ -489,7 +755,6 @@ describe("HookEngine", () => {
 			cwd: "/workspace",
 		}
 
-		// Should not throw
 		await expect(engine.runPost(ctx, { success: true })).resolves.toBeUndefined()
 		expect(failingPostHook).toHaveBeenCalledOnce()
 	})

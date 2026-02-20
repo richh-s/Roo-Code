@@ -16,7 +16,7 @@
  */
 
 import type { HookContext, HookResult, PreHookFn, PostHookFn } from "./types"
-import { classifyTool } from "./commandClassifier"
+import { classifyWithPath } from "./commandClassifier"
 import { scopeEnforcerHook } from "./scopeEnforcer"
 import { authorizationHook } from "./authorizationHook"
 import { isGovernedWorkspace } from "../core/context/activeIntents"
@@ -52,8 +52,8 @@ export class HookEngine {
 	 *          `proceed: false` with error payload if any hook blocks.
 	 */
 	async runPre(ctx: HookContext): Promise<HookResult> {
-		// Step 0: Classify the tool
-		ctx.classification = classifyTool(ctx.toolName)
+		// Step 0: Classify the tool with path-aware sensitivity detection
+		ctx.classification = classifyWithPath(ctx.toolName, ctx.params)
 
 		// SAFE tools bypass all enforcement
 		if (ctx.classification === "safe") {
@@ -65,7 +65,17 @@ export class HookEngine {
 			return { proceed: true }
 		}
 
-		// Run each pre-hook in order; short-circuit on first block
+		// SENSITIVE tools (e.g. read_file(".env")) → skip scope enforcement,
+		// run only the authorization hook so user can approve/reject the read.
+		if (ctx.classification === "sensitive") {
+			const authHook = this.preHooks.find((h) => h === authorizationHook)
+			if (authHook) {
+				return authHook(ctx)
+			}
+			return { proceed: true }
+		}
+
+		// DESTRUCTIVE tools → run full pipeline (scope → authorization)
 		for (const hook of this.preHooks) {
 			const result = await hook(ctx)
 			if (!result.proceed) {
