@@ -36,30 +36,61 @@ function sanitizePassword(password: unknown): string {
 	return sanitizeString(password).replace(/\u0000/g, "")
 }
 
-/**
- * Authenticate a user with email and password.
- * Returns a token on success or an error message on failure.
- */
-export function authenticateUser(credentials: LoginCredentials): LoginResult {
-	const email = sanitizeEmail(credentials?.email)
-	const password = sanitizePassword(credentials?.password)
+function validateLoginInput(email: string, password: string): string | null {
+	const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+	const MAX_EMAIL_LENGTH = 254
+	const MAX_PASSWORD_LENGTH = 128
 
 	if (!email || !password) {
-		return { success: false, error: "Email and password are required" }
+		return "Email and password are required"
 	}
 
-	const storedPassword = MOCK_USERS[email]
-
-	if (!storedPassword) {
-		return { success: false, error: "User not found" }
+	if (email.length > MAX_EMAIL_LENGTH) {
+		return "Email is too long"
 	}
 
-	if (storedPassword !== password) {
-		return { success: false, error: "Invalid password" }
+	if (!EMAIL_REGEX.test(email)) {
+		return "Invalid email format"
 	}
 
-	const token = Buffer.from(`${email}:${Date.now()}`).toString("base64")
-	return { success: true, token }
+	if (password.length > MAX_PASSWORD_LENGTH) {
+		return "Password is too long"
+	}
+
+	return null
+}
+
+/**
+ * Authenticates a user with sanitized credentials and basic validation.
+ *
+ * @param credentials - Raw login credentials containing email and password.
+ * @returns A successful result with a generated token, or a failure result with an error message.
+ */
+export function authenticateUser(credentials: LoginCredentials): LoginResult {
+	try {
+		const email = sanitizeEmail(credentials?.email)
+		const password = sanitizePassword(credentials?.password)
+
+		const validationError = validateLoginInput(email, password)
+		if (validationError) {
+			return { success: false, error: validationError }
+		}
+
+		const storedPassword = MOCK_USERS[email]
+
+		if (!storedPassword) {
+			return { success: false, error: "User not found" }
+		}
+
+		if (storedPassword !== password) {
+			return { success: false, error: "Invalid password" }
+		}
+
+		const token = Buffer.from(`${email}:${Date.now()}`).toString("base64")
+		return { success: true, token }
+	} catch {
+		return { success: false, error: "Login processing failed" }
+	}
 }
 
 /**

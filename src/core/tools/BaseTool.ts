@@ -251,9 +251,11 @@ export abstract class BaseTool<TName extends ToolName> {
 		// Phase 2: Hook Engine — UI-Blocking Authorization & Scope Enforcement
 		// Runs AFTER the Phase 1 gatekeeper (intent handshake) and BEFORE
 		// tool execution. Fires only for destructive tools in governed mode.
+		// hookCtx is hoisted so it can be reused by runPost in the finally block.
 		// ──────────────────────────────────────────────────────────────────────
+		let hookCtx: ReturnType<typeof buildHookContext> | undefined
 		if (!SAFE_TOOLS.has(this.name) && isGovernedWorkspace(task.cwd)) {
-			const hookCtx = buildHookContext(this.name, (params ?? {}) as Record<string, unknown>, task)
+			hookCtx = buildHookContext(this.name, (params ?? {}) as Record<string, unknown>, task)
 			const hookResult = await hookEngine.runPre(hookCtx)
 			if (!hookResult.proceed) {
 				callbacks.pushToolResult(formatResponse.toolError(hookResult.error ?? "Blocked by Hook Engine."))
@@ -285,6 +287,15 @@ export abstract class BaseTool<TName extends ToolName> {
 					intentId: task.activeIntentId,
 				}
 				task.intentTraceLog.push(traceEvent)
+			}
+
+			// Phase 3: Fire post-hooks (trace serializer).
+			// Uses the same hookCtx built for pre-hooks above.
+			if (hookCtx) {
+				await hookEngine.runPost(hookCtx, {
+					success: !executeError,
+					error: executeError?.message,
+				})
 			}
 		}
 	}

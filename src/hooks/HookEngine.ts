@@ -19,6 +19,7 @@ import type { HookContext, HookResult, PreHookFn, PostHookFn } from "./types"
 import { classifyWithPath } from "./commandClassifier"
 import { scopeEnforcerHook } from "./scopeEnforcer"
 import { authorizationHook } from "./authorizationHook"
+import { traceSerializerHook } from "./traceSerializerHook"
 import { isGovernedWorkspace } from "../core/context/activeIntents"
 
 // ---------------------------------------------------------------------------
@@ -36,8 +37,8 @@ export class HookEngine {
 		// on the approval dialog.
 		this.preHooks = [scopeEnforcerHook, authorizationHook]
 
-		// Post-hooks are optional — none registered by default.
-		this.postHooks = []
+		// Post-hooks — trace serializer registered by default (Phase 3).
+		this.postHooks = [traceSerializerHook]
 	}
 
 	// -----------------------------------------------------------------------

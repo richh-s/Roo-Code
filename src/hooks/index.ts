@@ -41,3 +41,11 @@ export type { HookErrorCodeValue } from "./toolError"
 // Pending scope updates
 export { writePendingScopeUpdate, loadPendingScopeUpdates } from "./pendingScopeUpdates"
 export type { PendingScopeUpdate } from "./pendingScopeUpdates"
+
+// Phase 3 — Trace Ledger
+export type { AgentTraceEntry, MutationClass, MutationType } from "./traceSchema"
+export { WRITE_TOOLS, DELETE_TOOLS, TRACE_LEDGER_PATH } from "./traceSchema"
+export { canonicalizePath } from "./pathNormalize"
+export { sha256 } from "./contentHash"
+export { classifyMutation, recordWrite, resetClassifierCache } from "./mutationClassifier"
+export { traceSerializerHook, resetTraceSerializerState } from "./traceSerializerHook"
