@@ -11,10 +11,11 @@
 
 /**
  * Classification of a tool invocation.
- * - `safe`        → read-only / non-destructive — bypasses enforcement
- * - `destructive` → writes, deletes, executes — subject to authorization + scope
+ * - `safe`        → read-only / non-destructive — bypasses all enforcement
+ * - `sensitive`   → read-only but accesses secrets / config — requires authorization (no scope check)
+ * - `destructive` → writes, deletes, executes — subject to scope enforcement + authorization
  */
-export type ToolClassification = "safe" | "destructive"
+export type ToolClassification = "safe" | "sensitive" | "destructive"
 
 // ---------------------------------------------------------------------------
 // Hook Context
