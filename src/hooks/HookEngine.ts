@@ -79,10 +79,19 @@ export class HookEngine {
 		}
 
 		// DESTRUCTIVE tools → run full pipeline (scope → authorization)
+		// Each hook is wrapped in its own error boundary (fail-safe):
+		// - If a hook returns { proceed: false } → pipeline short-circuits (policy block)
+		// - If a hook THROWS an error → log warning, continue to next hook (fail-open)
+		// This prevents a bug in one hook from crashing the entire extension.
 		for (const hook of this.preHooks) {
-			const result = await hook(ctx)
-			if (!result.proceed) {
-				return result
+			try {
+				const result = await hook(ctx)
+				if (!result.proceed) {
+					return result
+				}
+			} catch (err) {
+				console.warn(`[HookEngine] Pre-hook error (non-fatal, failing open):`, err)
+				// Continue to next hook — a hook bug should not block the user
 			}
 		}
 
