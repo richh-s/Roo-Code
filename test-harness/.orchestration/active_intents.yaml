@@ -1,4 +1,3 @@
-# Phase 1 Test Harness — Intent Governance Configuration
 # This file controls which intents are active and enforceable.
 # Only IN_PROGRESS intents can be selected by the agent.
 

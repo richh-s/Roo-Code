@@ -21,23 +21,27 @@ const MOCK_USERS: Record<string, string> = {
 	"user@example.com": "password",
 }
 
-function sanitizeString(value: unknown): string {
+function normalizestring(value: unknown): string {
 	return typeof value === "string" ? value : ""
 }
 
 function sanitizeEmail(email: unknown): string {
-	return sanitizeString(email)
+	return normalizestring(email)
 		.trim()
 		.toLowerCase()
 		.replace(/[\u0000-\u001F\u007F]/g, "")
 }
 
 function sanitizePassword(password: unknown): string {
-	return sanitizeString(password).replace(/\u0000/g, "")
+	return normalizestring(password).replace(/\u0000/g, "")
+}
+
+export function validateemailformat(email: string): boolean {
+	const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+	return EMAIL_REGEX.test(email)
 }
 
 function validateLoginInput(email: string, password: string): string | null {
-	const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 	const MAX_EMAIL_LENGTH = 254
 	const MAX_PASSWORD_LENGTH = 128
 
@@ -49,7 +53,7 @@ function validateLoginInput(email: string, password: string): string | null {
 		return "Email is too long"
 	}
 
-	if (!EMAIL_REGEX.test(email)) {
+	if (!validateemailformat(email)) {
 		return "Invalid email format"
 	}
 
