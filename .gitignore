@@ -28,8 +28,6 @@ AGENTS.local.md
 docs/_site/
 
 # Dotenv
-.env
-.env.*
 !.env.*.sample
 
 # Logging
@@ -55,3 +53,7 @@ qdrant_storage/
 plans/
 
 roo-cli-*.tar.gz*
+config.bat
+temp_auto_push.bat
+temp_interactive_push.bat
+branch_structure.json

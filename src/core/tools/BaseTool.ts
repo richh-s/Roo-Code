@@ -251,9 +251,11 @@ export abstract class BaseTool<TName extends ToolName> {
 		// Phase 2: Hook Engine — UI-Blocking Authorization & Scope Enforcement
 		// Runs AFTER the Phase 1 gatekeeper (intent handshake) and BEFORE
 		// tool execution. Fires only for destructive tools in governed mode.
+		// hookCtx is hoisted so it can be reused by runPost in the finally block.
 		// ──────────────────────────────────────────────────────────────────────
+		let hookCtx: ReturnType<typeof buildHookContext> | undefined
 		if (!SAFE_TOOLS.has(this.name) && isGovernedWorkspace(task.cwd)) {
-			const hookCtx = buildHookContext(this.name, (params ?? {}) as Record<string, unknown>, task)
+			hookCtx = buildHookContext(this.name, (params ?? {}) as Record<string, unknown>, task)
 			const hookResult = await hookEngine.runPre(hookCtx)
 			if (!hookResult.proceed) {
 				callbacks.pushToolResult(formatResponse.toolError(hookResult.error ?? "Blocked by Hook Engine."))
@@ -263,6 +265,20 @@ export abstract class BaseTool<TName extends ToolName> {
 
 		// Execute with typed parameters and record trace events for governed mode
 		let executeError: Error | undefined
+
+		// Phase 4: Capture tool result for accurate post-hook outcomes.
+		// ExecuteCommandTool (and others) don't throw on semantic failures
+		// (e.g. exit code != 0). They push the result via pushToolResult.
+		// We capture that result to detect failures for lessonRecorderHook.
+		let capturedToolResult: string | undefined
+		const originalPushToolResult = callbacks.pushToolResult
+		callbacks.pushToolResult = (result) => {
+			if (typeof result === "string") {
+				capturedToolResult = result
+			}
+			originalPushToolResult(result)
+		}
+
 		try {
 			await this.execute(params, task, callbacks)
 		} catch (error) {
@@ -285,6 +301,22 @@ export abstract class BaseTool<TName extends ToolName> {
 					intentId: task.activeIntentId,
 				}
 				task.intentTraceLog.push(traceEvent)
+			}
+
+			// Phase 3: Fire post-hooks (trace serializer).
+			// Uses the same hookCtx built for pre-hooks above.
+			if (hookCtx) {
+				// Phase 4: Detect command exit-code failures from captured result.
+				// Pattern matches "Exit code: N" where N != 0.
+				const isCommandFailure =
+					!executeError &&
+					!!capturedToolResult &&
+					/exit code:\s*[1-9]/i.test(capturedToolResult)
+
+				await hookEngine.runPost(hookCtx, {
+					success: !executeError && !isCommandFailure,
+					error: executeError?.message ?? (isCommandFailure ? capturedToolResult : undefined),
+				})
 			}
 		}
 	}

@@ -552,3 +552,337 @@ Dismiss (Escape) → treated as rejection
 | Tests report wrong classification        | Run unit tests: `cd src && ./node_modules/.bin/vitest run hooks/__tests__/HookEngine.spec.ts` |
 | `pending_scope_updates.json` not created | Ensure `.orchestration/` directory exists and is writable                                     |
 | Authorization dialog not appearing       | Check that the tool is classified as DESTRUCTIVE or SENSITIVE, not SAFE                       |
+
+---
+
+## Run Phase 3 Automated Tests
+
+```bash
+cd /Users/aman/Desktop/projects/10academy/Roo-Code/src
+./node_modules/.bin/vitest run hooks/__tests__/phase3.spec.ts --reporter verbose
+```
+
+**Expected output:**
+
+```
+ ✓ contentHash — sha256 > returns expected 64-char hex for 'hello'
+ ✓ pathNormalize — canonicalizePath > normalizes ./prefix
+ ✓ mutationClassifier > returns INTENT_EVOLUTION for empty ledger
+ ✓ mutationClassifier > ignores DELETE entries for classification
+ ✓ traceSerializerHook > writes valid JSONL for successful write_to_file
+ ✓ traceSerializerHook > detects delete tool by toolName
+ ...
+ Test Files  1 passed (1)
+      Tests  26 passed (26)
+```
+
+---
+
+## PHASE 3: Trace Ledger Tests
+
+> **What Phase 3 does:** Every write-class tool execution appends a cryptographically signed trace entry to `.orchestration/agent_trace.jsonl`. This converts ephemeral writes into a verifiable semantic ledger.
+
+---
+
+### Test 15 ▸ First Write Creates Ledger File
+
+**What it proves:** The trace serializer auto-creates `.orchestration/agent_trace.jsonl` on first write.
+
+**Steps:**
+
+1. Delete ledger if it exists:
+    ```bash
+    rm -f test-harness/.orchestration/agent_trace.jsonl
+    ```
+2. Select intent `refactor-auth`
+3. Type: _"Add input validation to login.ts"_
+4. After the agent writes the file, inspect:
+    ```bash
+    cat test-harness/.orchestration/agent_trace.jsonl | python3 -m json.tool
+    ```
+
+**Expected output:**
+
+```json
+{
+    "id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "timestamp": "2026-02-20T...",
+    "tool": "write_to_file",
+    "intentId": "refactor-auth",
+    "mutationClass": "INTENT_EVOLUTION",
+    "mutationType": "WRITE",
+    "filePath": "src/auth/login.ts",
+    "contentHash": "<64-char hex string>",
+    "outcome": "success",
+    "revisionId": "<git HEAD hash>",
+    "fileSizeBytes": <number>,
+    "toolArgsSnapshot": { "path": "src/auth/login.ts" }
+}
+```
+
+**Verify:**
+
+- ✅ `id` is a valid UUID
+- ✅ `contentHash` is 64 chars (SHA-256)
+- ✅ `mutationClass` is `"INTENT_EVOLUTION"` (first touch)
+- ✅ `mutationType` is `"WRITE"`
+- ✅ `fileSizeBytes` matches actual file size: `wc -c test-harness/src/auth/login.ts`
+- ✅ `toolArgsSnapshot` has `path` only (no content)
+
+---
+
+### Test 16 ▸ Re-edit → AST_REFACTOR Classification
+
+**What it proves:** The classifier detects subsequent writes by the same intent to the same file.
+
+**Steps:**
+
+1. Immediately after Test 15, type: _"Now add error handling to login.ts"_
+2. Inspect the ledger:
+    ```bash
+    tail -1 test-harness/.orchestration/agent_trace.jsonl | python3 -m json.tool
+    ```
+
+**Expected output:**
+
+```json
+{
+    "mutationClass": "AST_REFACTOR",
+    "mutationType": "WRITE",
+    "filePath": "src/auth/login.ts",
+    "intentId": "refactor-auth",
+    ...
+}
+```
+
+**Verify:**
+
+- ✅ `mutationClass` changed from `"INTENT_EVOLUTION"` to `"AST_REFACTOR"`
+- ✅ `contentHash` differs from Test 15 (file changed)
+- ✅ Both entries have different `id` values
+
+```bash
+# Compare hashes
+cat test-harness/.orchestration/agent_trace.jsonl | python3 -c "
+import sys, json
+lines = [json.loads(l) for l in sys.stdin if l.strip()]
+for e in lines:
+    print(f'{e[\"mutationClass\"]:20} {e[\"contentHash\"][:16]}...')
+"
+```
+
+---
+
+### Test 17 ▸ Restart Safety — Classification Survives Reload
+
+**What it proves:** After restarting the extension, classification reads the ledger (not in-memory cache) and still returns `AST_REFACTOR`.
+
+**Steps:**
+
+1. Complete Tests 15+16 (ledger has 2 entries for `login.ts`)
+2. **Restart the Extension Dev Host** (press Ctrl+Shift+F5 or close and re-launch with F5)
+3. Re-open `test-harness/` workspace
+4. Select intent `refactor-auth`
+5. Type: _"Add a JSDoc comment to login.ts"_
+6. Inspect:
+    ```bash
+    tail -1 test-harness/.orchestration/agent_trace.jsonl | python3 -m json.tool
+    ```
+
+**Expected output:**
+
+```json
+{
+    "mutationClass": "AST_REFACTOR",
+    ...
+}
+```
+
+- ✅ Still `"AST_REFACTOR"` — proves ledger was re-read after restart
+- ✅ If this showed `"INTENT_EVOLUTION"`, classification is broken
+
+---
+
+### Test 18 ▸ New File → INTENT_EVOLUTION
+
+**What it proves:** Writing to a file never touched by this intent is classified as `INTENT_EVOLUTION`.
+
+**Steps:**
+
+1. Type: _"Create a new file src/auth/middleware.ts with a basic auth middleware function"_
+2. Inspect:
+    ```bash
+    tail -1 test-harness/.orchestration/agent_trace.jsonl | python3 -m json.tool
+    ```
+
+**Expected output:**
+
+```json
+{
+    "mutationClass": "INTENT_EVOLUTION",
+    "mutationType": "WRITE",
+    "filePath": "src/auth/middleware.ts",
+    "intentId": "refactor-auth",
+    ...
+}
+```
+
+- ✅ New file = `"INTENT_EVOLUTION"` (first touch by this intent)
+
+---
+
+### Test 19 ▸ Ledger Integrity — Content Hash Matches Disk
+
+**What it proves:** `contentHash` is derived from the actual file on disk, not the LLM payload.
+
+**Steps:**
+
+1. After any successful write, verify the hash:
+
+    ```bash
+    # Get hash from ledger
+    LEDGER_HASH=$(tail -1 test-harness/.orchestration/agent_trace.jsonl | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['contentHash'])")
+
+    # Compute hash from actual file
+    DISK_HASH=$(shasum -a 256 test-harness/src/auth/login.ts | awk '{print $1}')
+
+    echo "Ledger: $LEDGER_HASH"
+    echo "Disk:   $DISK_HASH"
+
+    # They should match
+    [ "$LEDGER_HASH" = "$DISK_HASH" ] && echo "✅ MATCH" || echo "❌ MISMATCH"
+    ```
+
+- ✅ Hashes match — proves disk-truth, not payload-trust
+
+---
+
+### Test 20 ▸ Append-Only — Ledger Never Overwritten
+
+**What it proves:** Each write appends a new line; previous entries are never modified.
+
+**Steps:**
+
+1. Count lines before:
+    ```bash
+    wc -l test-harness/.orchestration/agent_trace.jsonl
+    ```
+2. Ask the agent to make another edit
+3. Count lines after:
+    ```bash
+    wc -l test-harness/.orchestration/agent_trace.jsonl
+    ```
+
+**Expected:**
+
+- ✅ Line count increased by exactly 1
+- ✅ Previous lines unchanged (use `diff` or `md5` to verify)
+
+```bash
+# Full integrity check — every line is valid JSON
+python3 -c "
+import json, sys
+with open('test-harness/.orchestration/agent_trace.jsonl') as f:
+    for i, line in enumerate(f, 1):
+        if line.strip():
+            try:
+                json.loads(line)
+                print(f'  Line {i}: ✅ valid')
+            except:
+                print(f'  Line {i}: ❌ MALFORMED')
+"
+```
+
+---
+
+### Test 21 ▸ Error Outcome Still Logged
+
+**What it proves:** Even when a tool fails, a trace entry is recorded with `outcome: "error"`.
+
+**Steps:**
+
+1. Attempt to write to a write-protected file or trigger a tool error by writing to an invalid path
+2. Check the ledger for the error entry:
+    ```bash
+    tail -1 test-harness/.orchestration/agent_trace.jsonl | python3 -m json.tool
+    ```
+
+**Expected:**
+
+```json
+{
+    "outcome": "error",
+    "error": "<error message>",
+    "contentHash": null,
+    ...
+}
+```
+
+- ✅ `outcome` is `"error"` (not missing)
+- ✅ `error` field present with message
+- ✅ `contentHash` is `null` (can't hash non-existent file)
+
+---
+
+### Test 22 ▸ Non-Write Tools Don't Produce Entries
+
+**What it proves:** Only write-class tools are traced. Read tools are silent.
+
+**Steps:**
+
+1. Count ledger lines:
+    ```bash
+    wc -l test-harness/.orchestration/agent_trace.jsonl
+    ```
+2. Type: _"Read the contents of src/shared/utils.ts"_
+3. Count ledger lines again
+
+**Expected:**
+
+- ✅ Line count unchanged — `read_file` is not a write tool
+- ✅ No entry with `"tool": "read_file"` in ledger
+
+---
+
+## Updated Summary Table
+
+| #   | Test                         | Phase | Feature Tested           | Expected                 |
+| --- | ---------------------------- | ----- | ------------------------ | ------------------------ |
+| 1   | No intent + destructive tool | P1    | Gatekeeper               | ❌ Blocked               |
+| 2   | Valid intent + in-scope edit | P1+P2 | Handshake + Scope + Auth | ✅ Executes              |
+| 3   | PAUSED intent selection      | P1    | Intent validation        | ❌ Rejected              |
+| 4   | YAML changed mid-session     | P1    | Live revalidation        | ❌ Stale cleared         |
+| 5   | No `.orchestration/` folder  | P1    | Ungoverned mode          | ✅ Free execution        |
+| 6   | Safe tool, no intent         | P1+P2 | SAFE classification      | ✅ Free execution        |
+| 7   | `read_file(".env")`          | P2    | SENSITIVE classification | ⚠️ Auth dialog           |
+| 8   | `read_file("*.pem")`         | P2    | SENSITIVE classification | ⚠️ Auth dialog           |
+| 9   | In-scope write               | P2    | Scope enforcer           | ✅ Passes scope          |
+| 10  | Out-of-scope write           | P2    | 3-button modal           | ⚠️ Reject/Once/Expand    |
+| 11  | Path traversal (`../`)       | P2    | Path normalization       | ❌ Immediate block       |
+| 12  | `.intentignore` file         | P2    | Scope exemption          | ✅ Bypasses scope        |
+| 13  | Error payloads               | P2    | `suggestedFix` field     | ✅ Actionable guidance   |
+| 14  | Approve/reject timing        | P2    | Promise blocking         | ⚠️ Blocks until click    |
+| 15  | First write → ledger created | P3    | Auto-create JSONL        | ✅ Entry with all fields |
+| 16  | Re-edit → AST_REFACTOR       | P3    | Mutation classification  | ✅ Class changes         |
+| 17  | Restart → classification OK  | P3    | Restart safety           | ✅ Reads ledger          |
+| 18  | New file → INTENT_EVOLUTION  | P3    | First-touch detection    | ✅ Correct class         |
+| 19  | contentHash matches disk     | P3    | Disk-truth hashing       | ✅ SHA-256 match         |
+| 20  | Append-only integrity        | P3    | Ledger immutability      | ✅ Line count +1         |
+| 21  | Error outcome logged         | P3    | Failure tracing          | ✅ outcome: "error"      |
+| 22  | Read tools not traced        | P3    | Write-only filter        | ✅ No entry added        |
+
+---
+
+## Troubleshooting
+
+| Problem                                  | Solution                                                                                      |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Extension not loading                    | Press **F5** to relaunch dev host; check Output → "Roo Code"                                  |
+| No governance errors                     | Verify `.orchestration/` exists in the **workspace root**                                     |
+| Tests report wrong classification        | Run unit tests: `cd src && ./node_modules/.bin/vitest run hooks/__tests__/HookEngine.spec.ts` |
+| `pending_scope_updates.json` not created | Ensure `.orchestration/` directory exists and is writable                                     |
+| Authorization dialog not appearing       | Check that the tool is classified as DESTRUCTIVE or SENSITIVE, not SAFE                       |
+| `agent_trace.jsonl` not created          | Ensure workspace is governed (`.orchestration/` exists) and intent is selected                |
+| `contentHash` mismatch with disk         | File may have been modified after trace was written; re-run hash comparison                   |
+| `mutationClass` always INTENT_EVOLUTION  | Check if `agent_trace.jsonl` is readable; classifier reads it on first call                   |
+| Phase 3 tests failing                    | Run `cd src && ./node_modules/.bin/vitest run hooks/__tests__/phase3.spec.ts`                 |

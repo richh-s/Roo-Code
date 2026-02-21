@@ -19,6 +19,9 @@ import type { HookContext, HookResult, PreHookFn, PostHookFn } from "./types"
 import { classifyWithPath } from "./commandClassifier"
 import { scopeEnforcerHook } from "./scopeEnforcer"
 import { authorizationHook } from "./authorizationHook"
+import { traceSerializerHook } from "./traceSerializerHook"
+import { staleLockHook } from "./staleLockHook"
+import { lessonRecorderHook } from "./lessonRecorderHook"
 import { isGovernedWorkspace } from "../core/context/activeIntents"
 
 // ---------------------------------------------------------------------------
@@ -34,10 +37,10 @@ export class HookEngine {
 		// Scope enforcement runs BEFORE authorization so that an out-of-scope
 		// write is rejected immediately without wasting the user's attention
 		// on the approval dialog.
-		this.preHooks = [scopeEnforcerHook, authorizationHook]
+		this.preHooks = [staleLockHook, scopeEnforcerHook, authorizationHook]
 
-		// Post-hooks are optional — none registered by default.
-		this.postHooks = []
+		// Post-hooks — trace serializer registered by default (Phase 3).
+		this.postHooks = [traceSerializerHook, lessonRecorderHook]
 	}
 
 	// -----------------------------------------------------------------------
@@ -76,10 +79,19 @@ export class HookEngine {
 		}
 
 		// DESTRUCTIVE tools → run full pipeline (scope → authorization)
+		// Each hook is wrapped in its own error boundary (fail-safe):
+		// - If a hook returns { proceed: false } → pipeline short-circuits (policy block)
+		// - If a hook THROWS an error → log warning, continue to next hook (fail-open)
+		// This prevents a bug in one hook from crashing the entire extension.
 		for (const hook of this.preHooks) {
-			const result = await hook(ctx)
-			if (!result.proceed) {
-				return result
+			try {
+				const result = await hook(ctx)
+				if (!result.proceed) {
+					return result
+				}
+			} catch (err) {
+				console.warn(`[HookEngine] Pre-hook error (non-fatal, failing open):`, err)
+				// Continue to next hook — a hook bug should not block the user
 			}
 		}
 

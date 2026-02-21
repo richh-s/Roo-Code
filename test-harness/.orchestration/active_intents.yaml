@@ -1,6 +1,6 @@
-# Phase 1 Test Harness — Intent Governance Configuration
 # This file controls which intents are active and enforceable.
 # Only IN_PROGRESS intents can be selected by the agent.
+# Status lifecycle: IN_PROGRESS → PAUSED → IN_PROGRESS → DONE
 
 intents:
   - id: "refactor-auth"
@@ -17,5 +17,16 @@ intents:
     status: PAUSED
     constraints:
       - "No schema changes"
+      - "Maintain backward compatibility with existing invoice format"
     scope:
       - "src/billing/*"
+
+  - id: "setup-ci-pipeline"
+    goal: "Configure CI/CD pipeline for automated testing"
+    status: DONE
+    constraints:
+      - "Use GitHub Actions"
+      - "Keep build time under 5 minutes"
+    scope:
+      - ".github/workflows/*"
+      - "scripts/ci/*"
