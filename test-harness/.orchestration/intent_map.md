@@ -9,7 +9,7 @@
 ### INT-001: `refactor-auth`
 
 - **Goal:** Refactor authentication module for improved maintainability
-- **Status:** ✅ DONE
+- **Status:** 🔄 IN_PROGRESS
 - **Scope:** `src/auth/*`
 - **Constraints:**
     - Do not modify public API
@@ -22,7 +22,7 @@
 ### INT-002: `optimize-billing`
 
 - **Goal:** Improve invoice generation performance
-- **Status:** 🔄 IN_PROGRESS
+- **Status:** ⏸️ PAUSED
 - **Scope:** `src/billing/*`
 - **Constraints:**
     - No schema changes
@@ -32,14 +32,14 @@
 
 ---
 
-### INT-003: `add-session-logging`
+### INT-003: `setup-ci-pipeline`
 
-- **Goal:** Add structured logging to session management
-- **Status:** ⏸️ PAUSED
-- **Scope:** `src/auth/session.ts`, `src/utils/logger.ts`
+- **Goal:** Configure CI/CD pipeline for automated testing
+- **Status:** ✅ DONE
+- **Scope:** `.github/workflows/*`, `scripts/ci/*`
 - **Constraints:**
-    - Use existing logging framework
-    - Do not log PII or credentials
+    - Use GitHub Actions
+    - Keep build time under 5 minutes
 - **Files Touched:** 0
 - **Trace Entries:** 0
 

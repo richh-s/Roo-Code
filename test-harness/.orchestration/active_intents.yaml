@@ -5,7 +5,7 @@
 intents:
   - id: "refactor-auth"
     goal: "Refactor authentication module for improved maintainability"
-    status: DONE
+    status: IN_PROGRESS
     constraints:
       - "Do not modify public API"
       - "Preserve existing function signatures"
@@ -14,19 +14,19 @@ intents:
 
   - id: "optimize-billing"
     goal: "Improve invoice generation performance"
-    status: IN_PROGRESS
+    status: PAUSED
     constraints:
       - "No schema changes"
       - "Maintain backward compatibility with existing invoice format"
     scope:
       - "src/billing/*"
 
-  - id: "add-session-logging"
-    goal: "Add structured logging to session management"
-    status: PAUSED
+  - id: "setup-ci-pipeline"
+    goal: "Configure CI/CD pipeline for automated testing"
+    status: DONE
     constraints:
-      - "Use existing logging framework"
-      - "Do not log PII or credentials"
+      - "Use GitHub Actions"
+      - "Keep build time under 5 minutes"
     scope:
-      - "src/auth/session.ts"
-      - "src/utils/logger.ts"
+      - ".github/workflows/*"
+      - "scripts/ci/*"
