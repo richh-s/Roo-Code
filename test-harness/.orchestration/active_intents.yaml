@@ -1,10 +1,11 @@
 # This file controls which intents are active and enforceable.
 # Only IN_PROGRESS intents can be selected by the agent.
+# Status lifecycle: IN_PROGRESS → PAUSED → IN_PROGRESS → DONE
 
 intents:
   - id: "refactor-auth"
     goal: "Refactor authentication module for improved maintainability"
-    status: IN_PROGRESS
+    status: DONE
     constraints:
       - "Do not modify public API"
       - "Preserve existing function signatures"
@@ -13,8 +14,19 @@ intents:
 
   - id: "optimize-billing"
     goal: "Improve invoice generation performance"
-    status: PAUSED
+    status: IN_PROGRESS
     constraints:
       - "No schema changes"
+      - "Maintain backward compatibility with existing invoice format"
     scope:
       - "src/billing/*"
+
+  - id: "add-session-logging"
+    goal: "Add structured logging to session management"
+    status: PAUSED
+    constraints:
+      - "Use existing logging framework"
+      - "Do not log PII or credentials"
+    scope:
+      - "src/auth/session.ts"
+      - "src/utils/logger.ts"
