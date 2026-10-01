@@ -32,4 +32,4 @@ export default [
 	{
 		ignores: ["webview-ui", "out"],
 	},
-]
+];
